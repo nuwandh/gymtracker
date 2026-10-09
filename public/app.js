@@ -154,6 +154,14 @@
     if (t) document.documentElement.setAttribute('data-theme', t);
     else document.documentElement.removeAttribute('data-theme');
   }
+  // Explicit choice if one was made, else whatever the system prefers right now.
+  function currentTheme() {
+    const t = ls.get('gt_theme', '');
+    if (t) return t;
+    return (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) ? 'light' : 'dark';
+  }
+  const SUN_SVG = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4.5"></circle><line x1="12" y1="1.5" x2="12" y2="4"></line><line x1="12" y1="20" x2="12" y2="22.5"></line><line x1="4.2" y1="4.2" x2="5.9" y2="5.9"></line><line x1="18.1" y1="18.1" x2="19.8" y2="19.8"></line><line x1="1.5" y1="12" x2="4" y2="12"></line><line x1="20" y1="12" x2="22.5" y2="12"></line><line x1="4.2" y1="19.8" x2="5.9" y2="18.1"></line><line x1="18.1" y1="5.9" x2="19.8" y2="4.2"></line></svg>';
+  const MOON_SVG = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14.5A8.5 8.5 0 1 1 9.5 4a7 7 0 0 0 10.5 10.5Z"></path></svg>';
 
   /* ---------------- toast, sound, wake lock ---------------- */
   let toastTimer = null;
@@ -447,9 +455,11 @@
 
   /* ---------------- views ---------------- */
   function viewLogin() {
-    return '<section class="hero" style="padding-top:28px">' +
-      '<h1 style="font-size:34px;line-height:1.1;font-weight:650;letter-spacing:-.02em">' + (S.sync.state === 'auth' ? 'Wrong key' : 'Welcome back') + '</h1>' +
-      '<p class="meta">Your key unlocks your plan and training history. It stays on this phone.</p></section>' +
+    return '<div class="login-photo"><img src="/login-bg.jpg" alt="" aria-hidden="true"><div class="fade"></div>' +
+      '<div class="login-brand"><span class="brand-mark"><span></span></span><b>Gym Tracker</b></div>' +
+      '<div class="login-caption"><h1>' + (S.sync.state === 'auth' ? 'Wrong key' : 'Welcome back') + '</h1>' +
+      '<p>Your key unlocks your plan and training history. It stays on this phone.</p></div>' +
+      '</div>' +
       '<div class="key-field"><label>Access key</label>' +
       '<input id="key-input" type="password" autocomplete="current-password" autocapitalize="none" spellcheck="false" placeholder="Passphrase">' +
       (S.sync.state === 'auth' ? '<span class="err">That key was not accepted.</span>' : '<span class="hint">This is the APP_PASSWORD set on your server.</span>') +
@@ -493,7 +503,9 @@
     const plan = PLAN.workouts[next];
     const other = next === 'A' ? 'B' : 'A';
 
-    let html = '<p class="eyebrow mono" style="margin-top:4px">' + esc(fmtDate(today)) + '</p>';
+    const dark = currentTheme() === 'dark';
+    let html = '<div class="progress-head" style="margin-top:4px"><span class="eyebrow mono">' + esc(fmtDate(today)) + '</span>' +
+      '<button class="icon-btn" data-act="theme-toggle" aria-label="Switch to ' + (dark ? 'light' : 'dark') + ' theme">' + (dark ? SUN_SVG : MOON_SVG) + '</button></div>';
     html += '<section class="hero" style="padding-top:4px">';
     if (S.active) {
       html += '<p class="eyebrow">In progress</p><h1 style="font-size:40px">' + esc(PLAN.workouts[S.active.workout].name) + '</h1>' +
@@ -707,8 +719,7 @@
   function viewSettings() {
     const si = syncInfo();
     const at = S.sync.at ? new Date(S.sync.at).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : 'never';
-    const theme = ls.get('gt_theme', '');
-    const isLight = theme ? theme === 'light' : !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches);
+    const isLight = currentTheme() === 'light';
     return '<h1 style="margin:8px 0 0;font-size:40px;font-weight:700;font-stretch:115%;letter-spacing:-.03em">Settings</h1>' +
       '<div class="section-label" style="margin-top:26px">Sync</div>' +
       '<div class="card">' +
@@ -790,6 +801,7 @@
       case 'sync': sync(); break;
       case 'pex': S.progressEx = d.id; render(); break;
       case 'theme': ls.set('gt_theme', d.v); applyTheme(); render(); break;
+      case 'theme-toggle': ls.set('gt_theme', currentTheme() === 'dark' ? 'light' : 'dark'); applyTheme(); render(); break;
       case 'rest-add':
         if (S.rest) { S.rest.endsAt += Number(d.s) * 1000; S.rest.total = Math.max(15, S.rest.total + Number(d.s)); S.rest.fired = false; saveRest(); renderRest(); }
         break;

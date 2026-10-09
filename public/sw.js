@@ -1,10 +1,10 @@
 // Offline shell. Bump VERSION whenever you deploy changes to app files,
 // so phones drop the old cached copy.
-const VERSION = 'v3';
+const VERSION = 'v5';
 const CACHE = 'gym-tracker-' + VERSION;
 const SHELL = [
   '/', '/index.html', '/style.css', '/plan.js', '/logic.js', '/app.js',
-  '/manifest.webmanifest', '/icon-192.png', '/icon-512.png', '/apple-touch-icon.png',
+  '/manifest.webmanifest', '/icon-192.png', '/icon-512.png', '/apple-touch-icon.png', '/login-bg.jpg',
 ];
 
 self.addEventListener('install', (e) => {

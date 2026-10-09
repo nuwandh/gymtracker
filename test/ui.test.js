@@ -110,6 +110,14 @@ test('full flow: login, workout to-do list + steppers, rest timer, finish, offli
     assert.equal(qa(w, '#nav button').length, 3);
   });
 
+  await t.test('today: quick theme toggle flips dark/light directly', async () => {
+    assert.equal(w.document.documentElement.getAttribute('data-theme'), null); // default/system
+    await click(w, '[data-act="theme-toggle"]');
+    assert.equal(w.document.documentElement.getAttribute('data-theme'), 'light');
+    await click(w, '[data-act="theme-toggle"]');
+    assert.equal(w.document.documentElement.getAttribute('data-theme'), 'dark');
+  });
+
   await t.test('today: Day A preview matches the plan, week 1 banner shown', async () => {
     assert.match(text(w, '#main'), /Week 1/);
     assert.match(text(w, '#main'), /New moves: 2 sets/);
