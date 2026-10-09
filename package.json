@@ -1,0 +1,19 @@
+{
+  "name": "gym-tracker",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Phone-first gym log. Vercel hosting, Google Sheets storage.",
+  "scripts": {
+    "dev": "node dev-server.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "google-auth-library": "^11.2.0"
+  },
+  "devDependencies": {
+    "jsdom": "^29.1.1"
+  }
+}
