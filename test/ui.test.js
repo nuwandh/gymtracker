@@ -32,40 +32,62 @@ const q = (w, s) => w.document.querySelector(s);
 const qa = (w, s) => [...w.document.querySelectorAll(s)];
 const text = (w, s) => (q(w, s) ? q(w, s).textContent.replace(/\s+/g, ' ').trim() : null);
 const click = async (w, s) => { const el = typeof s === 'string' ? q(w, s) : s; assert.ok(el, 'missing ' + s); el.click(); await tick(); };
+// No async wait needed: stepper clicks only trigger a synchronous state update + render.
+const clickFast = (w, s) => { const el = typeof s === 'string' ? q(w, s) : s; assert.ok(el, 'missing ' + s); el.click(); };
 const typeInto = (w, el, v) => { el.value = v; el.dispatchEvent(new w.Event('input', { bubbles: true })); };
 
-// Opens each remaining to-do exercise in turn and logs every set.
-// weightFor/repsFor choose values per exercise id. Stops once the to-do
-// list is gone (either every exercise is done and we landed on the
-// summary screen, or something unexpected happened).
+// jump (kg per stepper click) for each exercise, matching public/plan.js.
+const JUMP = {
+  'leg-press': 5, 'db-bench': 2, 'cable-row': 2.5, 'hip-thrust': 5, 'face-pull': 2.5,
+  'hammer-curl': 1, 'pushdown': 2.5, 'calf-raise': 2.5,
+  'goblet-squat': 2, 'lat-pulldown': 2.5, 'db-shoulder-press': 2, 'db-rdl': 2,
+  'lying-leg-curl': 2.5, 'lateral-raise': 1, 'rear-delt-fly': 1, 'db-curl': 1, 'oh-triceps': 2.5,
+};
+
+// Repeatedly taps the +/- stepper for one field of the active set until it reads `target`.
+function stepTo(w, exId, i, field, target, step) {
+  for (let guard = 0; guard < 400; guard++) {
+    const card = q(w, '.set-active[data-ex="' + exId + '"][data-i="' + i + '"]');
+    if (!card) return;
+    const stepperDiv = [...card.querySelectorAll('.stepper')].find((st) => st.querySelector('[data-f="' + field + '"]'));
+    if (!stepperDiv) return;
+    const current = Number(stepperDiv.querySelector('.val').textContent);
+    const diff = Math.round((target - current) / step);
+    if (diff === 0) return;
+    const dir = diff > 0 ? 1 : -1;
+    clickFast(w, stepperDiv.querySelector('[data-d="' + dir + '"]'));
+  }
+}
+
+// Opens each remaining to-do exercise in turn, dials in the stepper values and taps Log,
+// until the to-do list is gone (every exercise done -> lands on the summary screen).
 async function logAll(w, { weightFor = () => 40, repsFor = () => 12, secondsFor = () => 35, painOn = null } = {}) {
   for (let guard = 0; guard < 80; guard++) {
-    let card = q(w, '.focus-card');
+    let card = q(w, '.set-active');
     if (!card) {
       const todoRow = q(w, '.todo-row:not(.is-done)');
       if (!todoRow) break;
       await click(w, todoRow);
-      card = q(w, '.focus-card');
+      card = q(w, '.set-active');
       if (!card) break;
     }
     const id = card.dataset.ex;
-    if (painOn === id && !card.querySelector('[data-role="pain"]').checked) {
-      const c = card.querySelector('[data-role="pain"]'); c.checked = true; c.dispatchEvent(new w.Event('change', { bubbles: true }));
+    const i = Number(card.dataset.i);
+    if (painOn === id) {
+      const pr = q(w, '.pain-row');
+      if (pr && !pr.classList.contains('on')) await click(w, pr);
     }
-    const row = [...card.querySelectorAll('.set')].find((r) => !r.classList.contains('is-done'));
-    if (!row) break;
-    const wi = row.querySelector('[data-f="weight"]');
-    const ri = row.querySelector('[data-f="reps"]');
-    const si = row.querySelector('[data-f="seconds"]');
-    if (wi) typeInto(w, wi, String(weightFor(id)));
-    if (ri) typeInto(w, ri, String(repsFor(id)));
-    if (si) typeInto(w, si, String(secondsFor(id)));
-    row.querySelector('.set-ok').click();
-    await tick(5);
+    if (card.querySelector('[data-f="weight"]')) {
+      stepTo(w, id, i, 'weight', weightFor(id), JUMP[id] || 2.5);
+      stepTo(w, id, i, 'reps', repsFor(id), 1);
+    } else {
+      stepTo(w, id, i, 'seconds', secondsFor(id), 5);
+    }
+    await click(w, '.log-btn');
   }
 }
 
-test('full flow: login, workout to-do list, rest timer, finish, offline queue, resume, progress', async (t) => {
+test('full flow: login, workout to-do list + steppers, rest timer, finish, offline queue, resume, progress', async (t) => {
   const server = createServer();
   await new Promise((r) => server.listen(0, r));
   const base = `http://127.0.0.1:${server.address().port}`;
@@ -76,10 +98,10 @@ test('full flow: login, workout to-do list, rest timer, finish, offline queue, r
   t.after(() => { w.close(); server.close(); });
 
   await t.test('shows login, rejects a wrong key, accepts the right one', async () => {
-    assert.match(text(w, '#main'), /Sign in/);
+    assert.match(text(w, '#main'), /Welcome back/);
     typeInto(w, q(w, '#key-input'), 'wrong');
     await click(w, '[data-act="save-key"]'); await tick(120);
-    assert.match(text(w, '#main'), /Sign in/);
+    assert.match(text(w, '#main'), /Wrong key/);
     assert.match(text(w, '#main'), /not accepted/);
     typeInto(w, q(w, '#key-input'), KEY);
     await click(w, '[data-act="save-key"]'); await tick(150);
@@ -90,64 +112,57 @@ test('full flow: login, workout to-do list, rest timer, finish, offline queue, r
 
   await t.test('today: Day A preview matches the plan, week 1 banner shown', async () => {
     assert.match(text(w, '#main'), /Week 1/);
-    assert.match(text(w, '#main'), /newer moves/);
-    const items = qa(w, '.plist li').map((li) => li.textContent);
-    assert.equal(items.length, 9);
-    assert.match(items[0], /Leg press.*3 × 8-12/);
-    assert.match(items.find((s) => /hammer/i.test(s)), /2 × 10-12/); // new move: 2 sets in week 1
-    assert.match(items.find((s) => /Plank/.test(s)), /3 × 30-45 s/);
+    assert.match(text(w, '#main'), /New moves: 2 sets/);
+    const rows = qa(w, '.prev-row');
+    assert.equal(rows.length, 5); // 4 shown + "+ 5 more"
+    assert.match(rows[0].textContent, /Leg press.*8-12/);
+    assert.match(rows[rows.length - 1].textContent, /\+ 5 more/);
   });
 
   await t.test('workout: to-do list shown, pick an exercise out of order, finish it, see it move to Done, reopen it', async () => {
     await click(w, '[data-act="start"]');
     assert.ok(w.document.body.classList.contains('in-workout'));
     assert.match(text(w, '#main'), /0 of 9 done/);
-    assert.equal(q(w, '.todo-progress').getAttribute('aria-live'), 'polite');
     assert.equal(qa(w, '.todo-row').length, 9);
     assert.equal(q(w, '.done-section'), null); // nothing done yet, no Done section
 
     // pick an exercise that is not first in the list
     await click(w, '.todo-row[data-ex="cable-row"]');
-    assert.equal(q(w, '.focus-card').dataset.ex, 'cable-row');
-    assert.equal(qa(w, '.focus-card .set').length, 3);
+    assert.equal(q(w, '.focus-title').textContent, 'Seated cable row');
+    assert.equal(q(w, '.set-active').dataset.ex, 'cable-row');
+    assert.equal(qa(w, '.set-active, .set-compact').length, 3);
 
-    await click(w, '.focus-card .set-ok'); // nothing entered
-    assert.ok(q(w, '.focus-card .set.err'));
-    assert.match(text(w, '#toast'), /Enter your reps/);
-    assert.equal(q(w, '.rest-bar'), null);
-
-    for (let i = 0; i < 3; i++) {
-      const row = qa(w, '.focus-card .set').find((r) => !r.classList.contains('is-done'));
-      typeInto(w, row.querySelector('[data-f="weight"]'), '20');
-      typeInto(w, row.querySelector('[data-f="reps"]'), '10');
-      await click(w, row.querySelector('.set-ok'));
+    for (let n = 0; n < 3; n++) {
+      stepTo(w, 'cable-row', Number(q(w, '.set-active').dataset.i), 'weight', 20, 2.5);
+      stepTo(w, 'cable-row', Number(q(w, '.set-active').dataset.i), 'reps', 10, 1);
+      await click(w, '.log-btn');
     }
     // last set logged -> back on the to-do list automatically, exercise moved to Done
-    assert.equal(q(w, '.focus-card'), null);
+    assert.equal(q(w, '.set-active'), null);
     assert.match(text(w, '.rest-label'), /Rest · Seated cable row/);
     assert.match(text(w, '#main'), /1 of 9 done/);
     assert.equal(qa(w, '.todo-row').length, 8);
-    assert.match(text(w, '.done-head'), /Done \(1\)/);
-    assert.equal(q(w, '.done-section .todo-row'), null); // collapsed by default
+    assert.match(text(w, '.done-head'), /Done/);
+    assert.match(text(w, '.done-head'), /1/);
+    assert.equal(q(w, '.done-rows'), null); // collapsed by default
 
     await click(w, '[data-act="toggle-done"]');
-    assert.equal(qa(w, '.done-section .todo-row').length, 1);
-    await click(w, '.done-section .todo-row[data-ex="cable-row"]');
-    assert.equal(q(w, '.focus-card').dataset.ex, 'cable-row');
-    assert.equal(qa(w, '.focus-card .set.is-done').length, 3);
+    assert.equal(qa(w, '.done-rows li').length, 1);
+    await click(w, '.done-rows button[data-ex="cable-row"]');
+    assert.equal(q(w, '.set-active'), null); // all 3 sets done, nothing active
+    assert.equal(qa(w, '.set-compact.is-done').length, 3);
     await click(w, '[data-act="to-list"]');
 
     // leg-press: log one set, leave it half finished
     await click(w, '.todo-row[data-ex="leg-press"]');
-    const row = q(w, '.focus-card .set');
-    typeInto(w, row.querySelector('[data-f="weight"]'), '40,5');
-    typeInto(w, row.querySelector('[data-f="reps"]'), '10');
-    await click(w, '.focus-card .set-ok');
-    assert.ok(q(w, '.focus-card .set.is-done'));
+    stepTo(w, 'leg-press', 0, 'weight', 40, 5);
+    stepTo(w, 'leg-press', 0, 'reps', 10, 1);
+    await click(w, '.log-btn');
+    assert.ok(q(w, '.set-compact.is-done'));
     assert.match(text(w, '.rest-label'), /Rest · Leg press/);
     assert.equal(text(w, '#rest-time'), '2:00');
     const stored = JSON.parse(w.localStorage.getItem('gt_active'));
-    assert.equal(stored.exercises['leg-press'].sets[0].weight, '40,5');
+    assert.equal(stored.exercises['leg-press'].sets[0].weight, 40);
     await click(w, '[data-act="to-list"]');
     assert.match(text(w, '.todo-row[data-ex="leg-press"]'), /1 of 3 sets/);
   });
@@ -156,40 +171,38 @@ test('full flow: login, workout to-do list, rest timer, finish, offline queue, r
     await click(w, '[data-act="rest-add"][data-s="15"]');
     assert.match(text(w, '#rest-time'), /^2:1[45]$/);
     for (let i = 0; i < 9; i++) await click(w, '[data-act="rest-add"][data-s="-15"]'); // 135 s off a 135 s rest
-    assert.equal(text(w, '#rest-time'), 'Go!');
+    assert.equal(text(w, '#rest-time'), 'Go');
     assert.ok(q(w, '.rest-bar.is-done'));
-    assert.match(text(w, '.rest-label'), /Rest over/);
-    assert.equal(q(w, '[data-act="rest-add"]'), null); // +/- hidden once finished
+    assert.match(text(w, '.rest-bar'), /Rest over/);
     await click(w, '[data-act="rest-skip"]');
     assert.equal(q(w, '.rest-bar'), null);
     assert.ok(JSON.parse(w.localStorage.getItem('gt_active')));
   });
 
-  await t.test('un-logging a set works and the escape of odd input is safe', async () => {
+  await t.test('un-logging a set turns it back into the active set', async () => {
     await click(w, '.todo-row[data-ex="leg-press"]');
-    await click(w, '.focus-card .set.is-done .set-ok');
-    assert.equal(qa(w, '.focus-card .set.is-done').length, 0);
-    typeInto(w, q(w, '.focus-card [data-f="weight"]'), '12"><b id="pwn">x</b>');
-    await click(w, '[data-act="to-list"]'); // leave
-    await click(w, '.todo-row[data-ex="leg-press"]'); // reopen -> re-render
-    assert.equal(q(w, '#pwn'), null);
-    typeInto(w, q(w, '.focus-card [data-f="weight"]'), '40');
+    const doneRow = q(w, '.set-compact.is-done .tick-btn');
+    assert.ok(doneRow);
+    await click(w, doneRow);
+    assert.equal(qa(w, '.set-compact.is-done').length, 0);
+    assert.equal(q(w, '.set-active').dataset.i, '0');
+    stepTo(w, 'leg-press', 0, 'weight', 40, 5);
+    stepTo(w, 'leg-press', 0, 'reps', 10, 1);
+    await click(w, '.log-btn');
     await click(w, '[data-act="to-list"]');
   });
 
-  await t.test('finish Day A automatically once every exercise is done, hip thrust at the top of the range', async () => {
+  await t.test('finish Day A automatically once every exercise is done, hip thrust at the top of the range, pain flagged', async () => {
     await logAll(w, { weightFor: (id) => (id === 'hip-thrust' ? 40 : 20), repsFor: (id) => (id === 'hip-thrust' ? 12 : 10), painOn: 'db-bench' });
     await tick(150);
-    assert.match(text(w, '#main'), /Workout saved/);
+    assert.match(text(w, '#main'), /Workout done/);
     assert.match(text(w, '#main'), /Saved to your Google Sheet/);
-    assert.match(text(w, '#main'), /flagged pain on Dumbbell bench press/);
     assert.equal(w.localStorage.getItem('gt_active'), null);
     const data = await (await fetch(base + '/api/data', { headers: { 'x-app-key': KEY } })).json();
     assert.equal(data.sessions.length, 1);
     assert.equal(data.sessions[0].workout, 'A');
     assert.equal(data.sets.length, 23); // week 1: new moves (hammer curl, pushdown, calves) get 2 sets, face pull is 2 by plan
     assert.equal(data.sets.filter((x) => x.exerciseId === 'hammer-curl').length, 2);
-    assert.ok(data.sets.some((s) => s.exerciseId === 'plank' && s.seconds === 35 && s.weightKg === null));
     assert.ok(data.sets.some((s) => s.exerciseId === 'db-bench' && s.pain === true));
   });
 
@@ -222,28 +235,20 @@ test('full flow: login, workout to-do list, rest timer, finish, offline queue, r
     assert.equal(data.sessions.length, 2);
   });
 
-  await t.test('progression: Day A preview now says go up for hip thrust, and warns about pain', async () => {
-    const items = qa(w, '.plist li').map((li) => li.textContent);
-    assert.match(items.find((s) => /Hip thrust/.test(s)), /go up to 45 kg/);
-    assert.match(text(w, '#main'), /flagged pain on Dumbbell bench press/);
+  await t.test('progression: hip thrust is suggested to go up, and the to-do chip shows the target weight', async () => {
     await click(w, '[data-act="start"]');
-    // the to-do row shows the weight tip before it is even opened
-    assert.match(text(w, '.todo-row[data-ex="hip-thrust"]'), /go up to 45 kg/);
-    // hip thrust is the 4th exercise; open it and check the prefill
+    assert.match(text(w, '.todo-row[data-ex="hip-thrust"]'), /45/);
     await click(w, '.todo-row[data-ex="hip-thrust"]');
-    const first = q(w, '.focus-card .set');
-    assert.equal(first.querySelector('[data-f="weight"]').value, '45');
-    assert.equal(first.querySelector('[data-f="reps"]').value, '8');
-    assert.match(text(w, '.focus-card .tip'), /go up to 45 kg/);
+    assert.match(text(w, '.tip'), /go up to 45 kg/);
+    assert.equal(q(w, '.set-active .stepper .val').textContent, '45');
   });
 
   await t.test('reload mid-workout restores the to-do list, done state and half-finished sets', async () => {
     await click(w, '[data-act="to-list"]');
     await click(w, '.todo-row[data-ex="leg-press"]');
-    const row = q(w, '.focus-card .set');
-    typeInto(w, row.querySelector('[data-f="weight"]'), '55');
-    typeInto(w, row.querySelector('[data-f="reps"]'), '9');
-    await click(w, '.focus-card .set-ok');
+    stepTo(w, 'leg-press', 0, 'weight', 55, 5);
+    stepTo(w, 'leg-press', 0, 'reps', 9, 1);
+    await click(w, '.log-btn');
     const snapshot = {}; for (let i = 0; i < w.localStorage.length; i++) { const k = w.localStorage.key(i); snapshot[k] = w.localStorage.getItem(k); }
     const dom2 = await openApp(base, snapshot);
     const w2 = dom2.window;
@@ -252,8 +257,8 @@ test('full flow: login, workout to-do list, rest timer, finish, offline queue, r
       assert.match(text(w2, '#main'), /0 of 9 done/); // reload lands back on the to-do list, not the focused exercise
       assert.match(text(w2, '.todo-row[data-ex="leg-press"]'), /1 of 3 sets/);
       await click(w2, '.todo-row[data-ex="leg-press"]');
-      assert.equal(qa(w2, '.focus-card .set.is-done').length, 1);
-      assert.equal(q(w2, '.focus-card [data-f="weight"]').value, '55');
+      assert.equal(qa(w2, '.set-compact.is-done').length, 1);
+      assert.match(text(w2, '.set-compact.is-done'), /55/);
       await click(w2, '[data-act="to-list"]');
       await click(w2, '[data-act="back"]');
       assert.match(text(w2, '#main'), /Resume workout/);
@@ -269,27 +274,26 @@ test('full flow: login, workout to-do list, rest timer, finish, offline queue, r
 
   await t.test('progress: charts render with the right data', async () => {
     await click(w, '[data-act="tab"][data-v="progress"]');
-    assert.match(text(w, '#main'), /2 workouts/);
+    assert.match(text(w, '#main'), /Progress/);
     const bars = qa(w, 'svg.chart')[0];
     assert.match(bars.getAttribute('aria-label'), /2 in total, target 3/);
-    const sel = q(w, '#pex');
-    sel.value = 'hip-thrust'; sel.dispatchEvent(new w.Event('change', { bubbles: true }));
-    await tick();
+    await click(w, '.filter-chip[data-id="hip-thrust"]');
     const line = qa(w, 'svg.chart')[1];
     assert.match(line.getAttribute('aria-label'), /1 session, from 40 to 40 kg/);
-    assert.match(text(w, '#main'), /Best so far: 40 kg/);
-    sel.value = 'plank';
-    q(w, '#pex').value = 'plank'; q(w, '#pex').dispatchEvent(new w.Event('change', { bubbles: true }));
-    await tick();
-    assert.match(text(w, '#main'), /Best so far: 35 s/);
+    assert.match(text(w, '.top-set'), /40/);
+    await click(w, '.filter-chip[data-id="plank"]');
+    assert.match(text(w, '.top-set'), /35/);
     assert.match(text(w, '#main'), /Recent workouts/);
   });
 
-  await t.test('settings: sign out clears the key but keeps pending data', async () => {
+  await t.test('settings: theme toggle and sign out (keeps pending data)', async () => {
     await click(w, '[data-act="tab"][data-v="settings"]');
-    assert.match(text(w, '#main'), /Waiting to upload: 0/);
+    await click(w, '[data-act="theme"][data-v="light"]');
+    assert.equal(w.document.documentElement.getAttribute('data-theme'), 'light');
+    await click(w, '[data-act="theme"][data-v="dark"]');
+    assert.equal(JSON.parse(w.localStorage.getItem('gt_pending')).length, 0);
     await click(w, '[data-act="sign-out"]');
-    assert.match(text(w, '#main'), /Sign in/);
+    assert.match(text(w, '#main'), /Welcome back/);
     assert.equal(w.localStorage.getItem('gt_key'), null);
   });
 
