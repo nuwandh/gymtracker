@@ -34,11 +34,20 @@ const text = (w, s) => (q(w, s) ? q(w, s).textContent.replace(/\s+/g, ' ').trim(
 const click = async (w, s) => { const el = typeof s === 'string' ? q(w, s) : s; assert.ok(el, 'missing ' + s); el.click(); await tick(); };
 const typeInto = (w, el, v) => { el.value = v; el.dispatchEvent(new w.Event('input', { bubbles: true })); };
 
-// Log every set of the open workout. weightFor/repsFor choose values per exercise id.
+// Opens each remaining to-do exercise in turn and logs every set.
+// weightFor/repsFor choose values per exercise id. Stops once the to-do
+// list is gone (either every exercise is done and we landed on the
+// summary screen, or something unexpected happened).
 async function logAll(w, { weightFor = () => 40, repsFor = () => 12, secondsFor = () => 35, painOn = null } = {}) {
   for (let guard = 0; guard < 80; guard++) {
-    const card = q(w, '.ex.is-open');
-    if (!card) break;
+    let card = q(w, '.focus-card');
+    if (!card) {
+      const todoRow = q(w, '.todo-row:not(.is-done)');
+      if (!todoRow) break;
+      await click(w, todoRow);
+      card = q(w, '.focus-card');
+      if (!card) break;
+    }
     const id = card.dataset.ex;
     if (painOn === id && !card.querySelector('[data-role="pain"]').checked) {
       const c = card.querySelector('[data-role="pain"]'); c.checked = true; c.dispatchEvent(new w.Event('change', { bubbles: true }));
@@ -56,7 +65,7 @@ async function logAll(w, { weightFor = () => 40, repsFor = () => 12, secondsFor 
   }
 }
 
-test('full flow: login, workout, rest timer, finish, offline queue, resume, progress', async (t) => {
+test('full flow: login, workout to-do list, rest timer, finish, offline queue, resume, progress', async (t) => {
   const server = createServer();
   await new Promise((r) => server.listen(0, r));
   const base = `http://127.0.0.1:${server.address().port}`;
@@ -89,26 +98,58 @@ test('full flow: login, workout, rest timer, finish, offline queue, resume, prog
     assert.match(items.find((s) => /Plank/.test(s)), /3 × 30-45 s/);
   });
 
-  await t.test('workout: first exercise open, rejects empty reps, logs a set and starts the rest timer', async () => {
+  await t.test('workout: to-do list shown, pick an exercise out of order, finish it, see it move to Done, reopen it', async () => {
     await click(w, '[data-act="start"]');
     assert.ok(w.document.body.classList.contains('in-workout'));
-    assert.equal(q(w, '.ex.is-open').dataset.ex, 'leg-press');
-    assert.equal(qa(w, '.ex.is-open .set').length, 3);
+    assert.match(text(w, '#main'), /0 of 9 done/);
+    assert.equal(q(w, '.todo-progress').getAttribute('aria-live'), 'polite');
+    assert.equal(qa(w, '.todo-row').length, 9);
+    assert.equal(q(w, '.done-section'), null); // nothing done yet, no Done section
 
-    await click(w, '.ex.is-open .set-ok');       // nothing entered
-    assert.ok(q(w, '.ex.is-open .set.err'));
+    // pick an exercise that is not first in the list
+    await click(w, '.todo-row[data-ex="cable-row"]');
+    assert.equal(q(w, '.focus-card').dataset.ex, 'cable-row');
+    assert.equal(qa(w, '.focus-card .set').length, 3);
+
+    await click(w, '.focus-card .set-ok'); // nothing entered
+    assert.ok(q(w, '.focus-card .set.err'));
     assert.match(text(w, '#toast'), /Enter your reps/);
     assert.equal(q(w, '.rest-bar'), null);
 
-    const row = q(w, '.ex.is-open .set');
+    for (let i = 0; i < 3; i++) {
+      const row = qa(w, '.focus-card .set').find((r) => !r.classList.contains('is-done'));
+      typeInto(w, row.querySelector('[data-f="weight"]'), '20');
+      typeInto(w, row.querySelector('[data-f="reps"]'), '10');
+      await click(w, row.querySelector('.set-ok'));
+    }
+    // last set logged -> back on the to-do list automatically, exercise moved to Done
+    assert.equal(q(w, '.focus-card'), null);
+    assert.match(text(w, '.rest-label'), /Rest · Seated cable row/);
+    assert.match(text(w, '#main'), /1 of 9 done/);
+    assert.equal(qa(w, '.todo-row').length, 8);
+    assert.match(text(w, '.done-head'), /Done \(1\)/);
+    assert.equal(q(w, '.done-section .todo-row'), null); // collapsed by default
+
+    await click(w, '[data-act="toggle-done"]');
+    assert.equal(qa(w, '.done-section .todo-row').length, 1);
+    await click(w, '.done-section .todo-row[data-ex="cable-row"]');
+    assert.equal(q(w, '.focus-card').dataset.ex, 'cable-row');
+    assert.equal(qa(w, '.focus-card .set.is-done').length, 3);
+    await click(w, '[data-act="to-list"]');
+
+    // leg-press: log one set, leave it half finished
+    await click(w, '.todo-row[data-ex="leg-press"]');
+    const row = q(w, '.focus-card .set');
     typeInto(w, row.querySelector('[data-f="weight"]'), '40,5');
     typeInto(w, row.querySelector('[data-f="reps"]'), '10');
-    await click(w, '.ex.is-open .set-ok');
-    assert.ok(q(w, '.ex.is-open .set.is-done'));
+    await click(w, '.focus-card .set-ok');
+    assert.ok(q(w, '.focus-card .set.is-done'));
     assert.match(text(w, '.rest-label'), /Rest · Leg press/);
     assert.equal(text(w, '#rest-time'), '2:00');
     const stored = JSON.parse(w.localStorage.getItem('gt_active'));
     assert.equal(stored.exercises['leg-press'].sets[0].weight, '40,5');
+    await click(w, '[data-act="to-list"]');
+    assert.match(text(w, '.todo-row[data-ex="leg-press"]'), /1 of 3 sets/);
   });
 
   await t.test('rest timer: +15, runs out into a Go state, then dismisses', async () => {
@@ -125,20 +166,20 @@ test('full flow: login, workout, rest timer, finish, offline queue, resume, prog
   });
 
   await t.test('un-logging a set works and the escape of odd input is safe', async () => {
-    await click(w, '.ex.is-open .set.is-done .set-ok');
-    assert.equal(qa(w, '.ex.is-open .set.is-done').length, 0);
-    typeInto(w, q(w, '.ex.is-open [data-f="weight"]'), '12"><b id="pwn">x</b>');
-    await click(w, '.ex-head[data-ex="leg-press"]'); // close
-    await click(w, '.ex-head[data-ex="leg-press"]'); // reopen -> re-render
+    await click(w, '.todo-row[data-ex="leg-press"]');
+    await click(w, '.focus-card .set.is-done .set-ok');
+    assert.equal(qa(w, '.focus-card .set.is-done').length, 0);
+    typeInto(w, q(w, '.focus-card [data-f="weight"]'), '12"><b id="pwn">x</b>');
+    await click(w, '[data-act="to-list"]'); // leave
+    await click(w, '.todo-row[data-ex="leg-press"]'); // reopen -> re-render
     assert.equal(q(w, '#pwn'), null);
-    typeInto(w, q(w, '.ex.is-open [data-f="weight"]'), '40');
+    typeInto(w, q(w, '.focus-card [data-f="weight"]'), '40');
+    await click(w, '[data-act="to-list"]');
   });
 
-  await t.test('finish Day A with every set logged, hip thrust at the top of the range', async () => {
+  await t.test('finish Day A automatically once every exercise is done, hip thrust at the top of the range', async () => {
     await logAll(w, { weightFor: (id) => (id === 'hip-thrust' ? 40 : 20), repsFor: (id) => (id === 'hip-thrust' ? 12 : 10), painOn: 'db-bench' });
-    assert.equal(q(w, '.ex.is-open'), null);
-    assert.match(text(w, '#main'), /sets logged/);
-    await click(w, '[data-act="finish"].finish'); await tick(150);
+    await tick(150);
     assert.match(text(w, '#main'), /Workout saved/);
     assert.match(text(w, '#main'), /Saved to your Google Sheet/);
     assert.match(text(w, '#main'), /flagged pain on Dumbbell bench press/);
@@ -157,10 +198,12 @@ test('full flow: login, workout, rest timer, finish, offline queue, resume, prog
     assert.match(text(w, '#main'), /Day B/);
     assert.match(text(w, '#main'), /Last: Day A/);
     await click(w, '[data-act="start"]');
-    assert.equal(q(w, '.ex.is-open').dataset.ex, 'goblet-squat');
+    assert.equal(qa(w, '.todo-row').length, 11);
+    assert.equal(q(w, '.todo-row').dataset.ex, 'goblet-squat');
+    assert.match(text(w, '#main'), /0 of 11 done/);
     w.__fetch = () => Promise.reject(new TypeError('Failed to fetch')); // phone loses signal
     await logAll(w);
-    await click(w, '[data-act="finish"].finish'); await tick(150);
+    await tick(150);
     assert.match(text(w, '#main'), /Saved on this phone/);
     assert.match(text(w, '#top'), /1 to sync \(offline\)/);
     assert.equal(JSON.parse(w.localStorage.getItem('gt_pending')).length, 1);
@@ -184,27 +227,34 @@ test('full flow: login, workout, rest timer, finish, offline queue, resume, prog
     assert.match(items.find((s) => /Hip thrust/.test(s)), /go up to 45 kg/);
     assert.match(text(w, '#main'), /flagged pain on Dumbbell bench press/);
     await click(w, '[data-act="start"]');
+    // the to-do row shows the weight tip before it is even opened
+    assert.match(text(w, '.todo-row[data-ex="hip-thrust"]'), /go up to 45 kg/);
     // hip thrust is the 4th exercise; open it and check the prefill
-    await click(w, '.ex-head[data-ex="hip-thrust"]');
-    const first = q(w, '.ex.is-open .set');
+    await click(w, '.todo-row[data-ex="hip-thrust"]');
+    const first = q(w, '.focus-card .set');
     assert.equal(first.querySelector('[data-f="weight"]').value, '45');
     assert.equal(first.querySelector('[data-f="reps"]').value, '8');
-    assert.match(text(w, '.ex.is-open .tip'), /go up to 45 kg/);
+    assert.match(text(w, '.focus-card .tip'), /go up to 45 kg/);
   });
 
-  await t.test('reload mid-workout resumes the same workout with logged sets', async () => {
-    await click(w, '.ex-head[data-ex="leg-press"]');
-    const row = q(w, '.ex.is-open .set');
+  await t.test('reload mid-workout restores the to-do list, done state and half-finished sets', async () => {
+    await click(w, '[data-act="to-list"]');
+    await click(w, '.todo-row[data-ex="leg-press"]');
+    const row = q(w, '.focus-card .set');
     typeInto(w, row.querySelector('[data-f="weight"]'), '55');
     typeInto(w, row.querySelector('[data-f="reps"]'), '9');
-    await click(w, '.ex.is-open .set-ok');
+    await click(w, '.focus-card .set-ok');
     const snapshot = {}; for (let i = 0; i < w.localStorage.length; i++) { const k = w.localStorage.key(i); snapshot[k] = w.localStorage.getItem(k); }
     const dom2 = await openApp(base, snapshot);
     const w2 = dom2.window;
     try {
       assert.ok(w2.document.body.classList.contains('in-workout'));
-      assert.equal(qa(w2, '.ex.is-open .set.is-done').length, 1);
-      assert.equal(q(w2, '.ex.is-open [data-f="weight"]').value, '55');
+      assert.match(text(w2, '#main'), /0 of 9 done/); // reload lands back on the to-do list, not the focused exercise
+      assert.match(text(w2, '.todo-row[data-ex="leg-press"]'), /1 of 3 sets/);
+      await click(w2, '.todo-row[data-ex="leg-press"]');
+      assert.equal(qa(w2, '.focus-card .set.is-done').length, 1);
+      assert.equal(q(w2, '.focus-card [data-f="weight"]').value, '55');
+      await click(w2, '[data-act="to-list"]');
       await click(w2, '[data-act="back"]');
       assert.match(text(w2, '#main'), /Resume workout/);
     } finally { w2.close(); }
@@ -228,7 +278,7 @@ test('full flow: login, workout, rest timer, finish, offline queue, resume, prog
     const line = qa(w, 'svg.chart')[1];
     assert.match(line.getAttribute('aria-label'), /1 session, from 40 to 40 kg/);
     assert.match(text(w, '#main'), /Best so far: 40 kg/);
-    sel.value = 'plank'; 
+    sel.value = 'plank';
     q(w, '#pex').value = 'plank'; q(w, '#pex').dispatchEvent(new w.Event('change', { bubbles: true }));
     await tick();
     assert.match(text(w, '#main'), /Best so far: 35 s/);

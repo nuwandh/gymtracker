@@ -45,7 +45,8 @@
     rest: ls.get('gt_rest', null),
     view: 'today',
     pick: null,
-    expanded: null,
+    focus: null,
+    doneOpen: false,
     summary: null,
     progressEx: 'hip-thrust',
     sync: { state: 'idle', msg: '', at: ls.get('gt_sync_at', null) },
@@ -253,7 +254,8 @@
     });
     S.active = a;
     S.pick = null;
-    S.expanded = firstIncomplete();
+    S.focus = null;
+    S.doneOpen = false;
     S.view = 'workout';
     saveActive();
     holdScreen();
@@ -262,11 +264,6 @@
   }
 
   const exerciseDone = (id) => S.active.exercises[id].sets.every((s) => s.done);
-  function firstIncomplete() {
-    const list = PLAN.workouts[S.active.workout].exercises;
-    for (let i = 0; i < list.length; i++) if (!exerciseDone(list[i].id)) return list[i].id;
-    return null;
-  }
 
   function toggleSet(exId, i) {
     const a = S.active;
@@ -291,20 +288,18 @@
     }
 
     s.done = true;
-    const wasOpen = S.expanded === exId;
-    if (exerciseDone(exId) && wasOpen) S.expanded = firstIncomplete();
+    const justFinished = exerciseDone(exId);
     saveActive();
 
     const allDone = PLAN.workouts[a.workout].exercises.every((e) => exerciseDone(e.id));
-    if (allDone) { S.rest = null; saveRest(); toast('All sets done. Finish the workout when you are ready.'); }
-    else startRest(ex.rest, ex.name);
+    if (justFinished) S.focus = null; // back to the to-do list automatically
+    if (allDone) {
+      S.rest = null; saveRest();
+      finishWorkout();
+      return;
+    }
+    startRest(ex.rest, ex.name);
     render();
-    if (exerciseDone(exId) && S.expanded) scrollToEx(S.expanded);
-  }
-
-  function scrollToEx(id) {
-    const el = document.querySelector('.ex[data-ex="' + id + '"]');
-    if (el && el.scrollIntoView) el.scrollIntoView({ block: 'start', behavior: 'smooth' });
   }
 
   function buildSession(a) {
@@ -353,6 +348,8 @@
     S.active = null; saveActive();
     S.rest = null; saveRest();
     S.pick = null;
+    S.focus = null;
+    S.doneOpen = false;
     releaseScreen();
     S.view = 'summary';
     render();
@@ -363,6 +360,8 @@
   function discardWorkout() {
     S.active = null; saveActive();
     S.rest = null; saveRest();
+    S.focus = null;
+    S.doneOpen = false;
     releaseScreen();
     S.view = 'today';
     render();
@@ -471,46 +470,76 @@
     return html;
   }
 
-  function exCard(ex, idx) {
+  function todoRow(ex, isDone) {
     const e = S.active.exercises[ex.id];
     const n = e.sets.length;
-    const done = e.sets.filter((s) => s.done).length;
-    const open = S.expanded === ex.id;
-    const complete = done === n;
-    let html = '<section class="ex' + (open ? ' is-open' : '') + '" data-ex="' + ex.id + '">' +
-      '<button class="ex-head" data-act="toggle" data-ex="' + ex.id + '" aria-expanded="' + open + '">' +
-        '<span class="ex-num' + (complete ? ' ok' : '') + '">' + (complete ? '✓' : idx + 1) + '</span>' +
-        '<span class="ex-title"><b>' + esc(ex.name) + '</b><small>' + (ex.sub ? esc(ex.sub) + ' · ' : '') + n + ' × ' + ex.reps.join('-') + (ex.type === 'time' ? ' s' : '') + ' · rest ' + restLabel(ex.rest) + '</small></span>' +
-        '<span class="ex-count">' + done + '/' + n + '</span></button>';
-    if (open) {
-      html += '<div class="ex-body"><p class="tip ' + esc(e.tipKind) + '">' + esc(e.tip) + '</p>' +
-        '<p class="cue">' + esc(ex.cue) + '</p>';
-      if (ex.warn) html += '<p class="warn-text">' + esc(ex.warn) + '</p>';
-      if (e.prevPain) html += '<p class="warn-text">You flagged pain here last time. Go lighter, or swap it.</p>';
-      if (ex.variants) {
-        html += '<label class="variant">Which one today?<select data-role="variant" data-ex="' + ex.id + '">' +
-          ex.variants.map((v) => '<option' + (v === e.variant ? ' selected' : '') + '>' + esc(v) + '</option>').join('') + '</select></label>';
-      }
-      e.sets.forEach((s, i) => {
-        const field = (name, val, label, mode) =>
-          '<label class="f"><span>' + label + '</span><input type="text" inputmode="' + mode + '" enterkeyhint="done" autocomplete="off" data-f="' + name + '" value="' + esc(val) + '" aria-label="Set ' + (i + 1) + ' ' + label + '"></label>';
-        html += '<div class="set' + (s.done ? ' is-done' : '') + '" data-ex="' + ex.id + '" data-i="' + i + '"><span class="set-n">' + (i + 1) + '</span>' +
-          (ex.type === 'time' ? field('seconds', s.seconds, 'seconds', 'numeric') : field('weight', s.weight, 'kg', 'decimal') + field('reps', s.reps, 'reps', 'numeric')) +
-          '<button class="set-ok" data-act="set" data-ex="' + ex.id + '" data-i="' + i + '" aria-pressed="' + !!s.done + '" aria-label="' + (s.done ? 'Undo set ' : 'Log set ') + (i + 1) + '">' + (s.done ? '✓ Done' : 'Log') + '</button></div>';
-      });
-      html += '<label class="check"><input type="checkbox" data-role="pain" data-ex="' + ex.id + '"' + (e.pain ? ' checked' : '') + '> Felt pain or pinching here</label></div>';
+    const doneSets = e.sets.filter((s) => s.done).length;
+    const unit = ex.type === 'time' ? ' s' : '';
+    const partial = !isDone && doneSets > 0;
+    return '<li><button class="todo-row' + (isDone ? ' is-done' : '') + '" data-act="open" data-ex="' + ex.id + '" aria-label="' +
+      esc(ex.name) + (isDone ? ', done. Tap to reopen' : partial ? ', ' + doneSets + ' of ' + n + ' sets done' : '') + '">' +
+      '<span class="todo-chk" aria-hidden="true">' + (isDone ? '✓' : '') + '</span>' +
+      '<span class="todo-main"><b>' + esc(ex.name) + '</b>' +
+      '<small>' + (ex.sub ? esc(ex.sub) + ' · ' : '') + n + ' × ' + ex.reps.join('-') + unit + (e.tip ? ' · ' + esc(e.tip) : '') + '</small></span>' +
+      (partial ? '<span class="todo-badge">' + doneSets + ' of ' + n + ' sets</span>' : '') +
+      '</button></li>';
+  }
+
+  function viewTodoList() {
+    const plan = PLAN.workouts[S.active.workout];
+    const list = plan.exercises;
+    const doneList = list.filter((ex) => exerciseDone(ex.id));
+    const todoList = list.filter((ex) => !exerciseDone(ex.id));
+
+    let html = '<section class="card" style="margin-top:0"><label class="check" style="margin:0"><input type="checkbox" data-role="warmup"' + (S.active.warmup ? ' checked' : '') + '><span>Warm-up done<br><span class="muted">' + esc(PLAN.warmup) + '</span></span></label></section>' +
+      '<p class="todo-progress num" aria-live="polite">' + doneList.length + ' of ' + list.length + ' done</p>' +
+      '<ul class="todo-list">' + (todoList.length
+        ? todoList.map((ex) => todoRow(ex, false)).join('')
+        : '<li class="empty-row">All exercises done. Finish when you are ready.</li>') + '</ul>';
+
+    if (doneList.length) {
+      html += '<section class="done-section' + (S.doneOpen ? ' is-open' : '') + '">' +
+        '<button class="done-head" data-act="toggle-done" aria-expanded="' + S.doneOpen + '">Done (' + doneList.length + ')</button>' +
+        (S.doneOpen ? '<ul class="todo-list">' + doneList.map((ex) => todoRow(ex, true)).join('') + '</ul>' : '') +
+        '</section>';
     }
-    return html + '</section>';
+
+    html += '<button class="btn btn-primary btn-big finish" data-act="finish">Finish workout</button>';
+    return html;
+  }
+
+  function viewFocus(exId) {
+    const ex = EX[exId];
+    const e = S.active.exercises[exId];
+    const n = e.sets.length;
+    const doneSets = e.sets.filter((s) => s.done).length;
+    let html = '<button class="link focus-back" data-act="to-list">‹ Back to list</button>' +
+      '<section class="card focus-card" data-ex="' + ex.id + '">' +
+      '<h2 class="focus-title">' + esc(ex.name) + '</h2>' +
+      '<p class="muted num" aria-live="polite">' + n + ' × ' + ex.reps.join('-') + (ex.type === 'time' ? ' s' : '') +
+        ' · ' + doneSets + ' of ' + n + ' done · rest ' + restLabel(ex.rest) + '</p>' +
+      '<p class="tip ' + esc(e.tipKind) + '">' + esc(e.tip) + '</p>' +
+      '<p class="cue">' + esc(ex.cue) + '</p>';
+    if (ex.warn) html += '<p class="warn-text">' + esc(ex.warn) + '</p>';
+    if (e.prevPain) html += '<p class="warn-text">You flagged pain here last time. Go lighter, or swap it.</p>';
+    if (ex.variants) {
+      html += '<label class="variant">Which one today?<select data-role="variant" data-ex="' + ex.id + '">' +
+        ex.variants.map((v) => '<option' + (v === e.variant ? ' selected' : '') + '>' + esc(v) + '</option>').join('') + '</select></label>';
+    }
+    e.sets.forEach((s, i) => {
+      const field = (name, val, label, mode) =>
+        '<label class="f"><span>' + label + '</span><input type="text" inputmode="' + mode + '" enterkeyhint="done" autocomplete="off" data-f="' + name + '" value="' + esc(val) + '" aria-label="Set ' + (i + 1) + ' ' + label + '"></label>';
+      html += '<div class="set' + (s.done ? ' is-done' : '') + '" data-ex="' + ex.id + '" data-i="' + i + '"><span class="set-n">' + (i + 1) + '</span>' +
+        (ex.type === 'time' ? field('seconds', s.seconds, 'seconds', 'numeric') : field('weight', s.weight, 'kg', 'decimal') + field('reps', s.reps, 'reps', 'numeric')) +
+        '<button class="set-ok" data-act="set" data-ex="' + ex.id + '" data-i="' + i + '" aria-pressed="' + !!s.done + '" aria-label="' + (s.done ? 'Undo set ' : 'Log set ') + (i + 1) + '">' + (s.done ? '✓ Done' : 'Log') + '</button></div>';
+    });
+    html += '<label class="check"><input type="checkbox" data-role="pain" data-ex="' + ex.id + '"' + (e.pain ? ' checked' : '') + '> Felt pain or pinching here</label>' +
+      '</section>';
+    return html;
   }
 
   function viewWorkout() {
-    const plan = PLAN.workouts[S.active.workout];
-    const doneSets = plan.exercises.reduce((t, ex) => t + S.active.exercises[ex.id].sets.filter((s) => s.done).length, 0);
-    const totalSets = plan.exercises.reduce((t, ex) => t + S.active.exercises[ex.id].sets.length, 0);
-    return '<section class="card" style="margin-top:0"><label class="check" style="margin:0"><input type="checkbox" data-role="warmup"' + (S.active.warmup ? ' checked' : '') + '><span>Warm-up done<br><span class="muted">' + esc(PLAN.warmup) + '</span></span></label></section>' +
-      plan.exercises.map(exCard).join('') +
-      '<p class="muted num" style="text-align:center;margin-top:16px">' + doneSets + ' of ' + totalSets + ' sets logged</p>' +
-      '<button class="btn btn-primary btn-big finish" data-act="finish">Finish workout</button>';
+    return S.focus ? viewFocus(S.focus) : viewTodoList();
   }
 
   function viewSummary() {
@@ -615,10 +644,12 @@
       case 'tab': S.view = d.v; render(); window.scrollTo(0, 0); break;
       case 'start': startWorkout(d.w); break;
       case 'pick': S.pick = d.w || null; render(); break;
-      case 'resume': S.view = 'workout'; S.expanded = S.expanded || firstIncomplete(); holdScreen(); render(); break;
-      case 'back': S.view = 'today'; render(); break;
+      case 'resume': S.view = 'workout'; holdScreen(); render(); break;
+      case 'back': S.view = 'today'; S.focus = null; render(); break;
       case 'discard': if (window.confirm('Discard this workout? Logged sets will be lost.')) discardWorkout(); break;
-      case 'toggle': S.expanded = S.expanded === d.ex ? null : d.ex; render(); if (S.expanded) scrollToEx(S.expanded); break;
+      case 'open': S.focus = d.ex; render(); window.scrollTo(0, 0); break;
+      case 'to-list': S.focus = null; render(); window.scrollTo(0, 0); break;
+      case 'toggle-done': S.doneOpen = !S.doneOpen; render(); break;
       case 'set': toggleSet(d.ex, Number(d.i)); break;
       case 'finish': finishWorkout(); break;
       case 'done': S.summary = null; S.view = 'today'; render(); window.scrollTo(0, 0); break;
@@ -686,7 +717,7 @@
   /* ---------------- boot ---------------- */
   function boot() {
     if (S.rest && Date.now() - S.rest.endsAt > 10 * 60 * 1000) { S.rest = null; saveRest(); }
-    if (S.active) { S.view = 'workout'; S.expanded = firstIncomplete(); holdScreen(); }
+    if (S.active) { S.view = 'workout'; S.focus = null; holdScreen(); }
     render();
     setInterval(tick, 500);
     if (S.key) sync();

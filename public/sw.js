@@ -1,6 +1,6 @@
 // Offline shell. Bump VERSION whenever you deploy changes to app files,
 // so phones drop the old cached copy.
-const VERSION = 'v1';
+const VERSION = 'v2';
 const CACHE = 'gym-tracker-' + VERSION;
 const SHELL = [
   '/', '/index.html', '/style.css', '/plan.js', '/logic.js', '/app.js',
